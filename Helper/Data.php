@@ -4,8 +4,14 @@
  * See COPYING.txt for license details.
  */
 namespace Payfort\Fort\Helper;
-use Magento\Sales\Model\Order;
+use Magento\Framework\App\ObjectManager as OM;
+use Magento\Sales\Api\Data\OrderStatusHistoryInterface as IHistory;
 use Magento\Sales\Api\OrderManagementInterface;
+use Magento\Sales\Model\Order;
+use Magento\Sales\Model\Order\Config as OrderConfig;
+use Magento\Sales\Model\Order\Email\Sender\OrderSender;
+use Magento\Sales\Model\Order\Payment as OP;
+use Magento\Sales\Model\Order\Status\History;
 
 /**
  * Payment module base helper
@@ -110,6 +116,13 @@ class Data extends \Magento\Payment\Helper\Data
         $gatewayParams = array(
             'merchant_identifier' => $this->getMainConfigData('merchant_identifier'),
             'access_code'         => $this->getMainConfigData('access_code'),
+			/**
+			 * 2018-02-09
+			 * «The Merchant’s unique order number»
+			 * Alphanumeric, Mandatory, Max: 40.
+			 * Special characters: «-_.».
+			 * https://docs.payfort.com/docs/redirection/build/index.html#authorization-purchase-request
+			 */
             'merchant_reference'  => $orderId,
             'language'            => $language,
         );
@@ -195,10 +208,26 @@ class Data extends \Magento\Payment\Helper\Data
         $email         = str_replace(array('+', "'", '  ', ' '), '', $email);
 
         $postData = array(
+			/**
+			 * 2018-02-09
+			 * «The Merchant’s unique order number»
+			 * Alphanumeric, Mandatory, Max: 40.
+			 * Special characters: «-_.».
+			 * https://docs.payfort.com/docs/redirection/build/index.html#authorization-purchase-request
+			 */
             'merchant_reference'    => $orderId,
             'access_code'           => $this->getMainConfigData('access_code'),
             'command'               => $this->getMainConfigData('command'),
             'merchant_identifier'   => $this->getMainConfigData('merchant_identifier'),
+			/**
+			 * 2018-02-09
+			 * «It holds the customer’s IP address.
+			 * It’s Mandatory, if the fraud service is active.
+			 * We support IPv4 and IPv6 as shown in the example below.»
+			 * Alphanumeric, Mandatory, Max: 45.
+			 * Special characters: «.:».
+			 * https://docs.payfort.com/docs/redirection/build/index.html#authorization-purchase-request
+			 */
             'customer_ip'           => $ip,
             'amount'                => $amount,
             'currency'              => strtoupper($currency),
@@ -474,19 +503,71 @@ class Data extends \Magento\Payment\Helper\Data
         return false;
     }
 
-    public function processOrder($order) {
+	/**
+	 * 2018-02-09
+	 * @param Order $o
+	 * @throws \Exception
+	 */
+    function processOrder(Order $o) {
+    	$op = $o->getPayment(); /** @var OP $op */
+		if ($o->getTotalDue()) {
+			$op->setIsTransactionClosed(true);
+			$totalDue = $o->getTotalDue();
+			$baseTotalDue = $o->getBaseTotalDue();
+			$op->setAmountAuthorized($totalDue);
+			$op->setBaseAmountAuthorized($baseTotalDue);
+			$op->capture(null);
+			$orderConfig = OM::getInstance()->get(OrderConfig::class); /** @var OrderConfig $orderConfig */
+			$this->updateOrder(
+				$o
+				,Order::STATE_PROCESSING
+				,$orderConfig->getStateDefaultStatus(Order::STATE_PROCESSING)
+				,true
+			);
+			$o->save();
+			/** @var OrderSender $os */
+			$os = OM::getInstance()->get(OrderSender::class);
+			$os->send($o);
+			/** @var History|IHistory $h */
+			$h = $o->addStatusHistoryComment(__('You have confirmed the order to the customer via email.'));
+			$h->setIsVisibleOnFront(false);
+			$h->setIsCustomerNotified(true);
+			$h->save();
+		}
+    }
 
-        if ($order->getState() != $order::STATE_PROCESSING) {
-            $order->setStatus($order::STATE_PROCESSING);
-            $order->setState($order::STATE_PROCESSING);
-            //$order->setExtOrderId($orderNumber);
-            $order->save();
-            $customerNotified = $this->sendOrderEmail($order);
-            $order->addStatusToHistory( $order::STATE_PROCESSING , 'Payfort_Fort :: Order has been paid.', $customerNotified );
-            $order->save();
-            return true;
+    /**
+     * Set appropriate state to order or add status to order history
+     *
+     * @param Order $order
+     * @param string $orderState
+     * @param string $orderStatus
+     * @param bool $isCustomerNotified
+     * @return void
+     */
+    private function updateOrder(Order $order, $orderState, $orderStatus, $isCustomerNotified)
+    {
+        // add message if order was put into review during authorization or capture
+        $message = $order->getCustomerNote();
+        $originalOrderState = $order->getState();
+        $originalOrderStatus = $order->getStatus();
+
+        switch (true) {
+            case ($message && ($originalOrderState == Order::STATE_PAYMENT_REVIEW)):
+                $order->addStatusToHistory($originalOrderStatus, $message, $isCustomerNotified);
+                break;
+            case ($message):
+            case ($originalOrderState && $message):
+            case ($originalOrderState != $orderState):
+            case ($originalOrderStatus != $orderStatus):
+                $order->setState($orderState)
+                    ->setStatus($orderStatus)
+                    ->addStatusHistoryComment($message)
+                    ->setIsCustomerNotified($isCustomerNotified);
+                break;
+            default:
+                break;
         }
-        return false;
     }
 
     public function sendOrderEmail($order) {

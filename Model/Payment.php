@@ -87,7 +87,46 @@ class Payment extends \Magento\Payment\Model\Method\AbstractMethod
         $this->_minAmount = $this->getConfigData('min_order_total');
         $this->_maxAmount = $this->getConfigData('max_order_total');
     }
-    
+
+	/**
+	 * 2018-02-14
+	 * Dmitry Fedyuk: https://mage2.pro/u/dmitry_fedyuk
+	 * @override
+	 * @see \Magento\Payment\Model\Method\AbstractMethod::canCapture()
+	 * 1) @used-by \Magento\Sales\Model\Order\Payment::canCapture():
+	 *		if (!$this->getMethodInstance()->canCapture()) {
+	 *			return false;
+	 *		}
+	 * https://github.com/magento/magento2/blob/2.0.0/app/code/Magento/Sales/Model/Order/Payment.php#L246-L269
+	 * https://github.com/magento/magento2/blob/2.2.1/app/code/Magento/Sales/Model/Order/Payment.php#L277-L301
+	 * 2) @used-by \Magento\Sales\Model\Order\Payment::_invoice():
+	 *		protected function _invoice() {
+	 *			$invoice = $this->getOrder()->prepareInvoice();
+	 *			$invoice->register();
+	 *			if ($this->getMethodInstance()->canCapture()) {
+	 *				$invoice->capture();
+	 *			}
+	 *			$this->getOrder()->addRelatedObject($invoice);
+	 *			return $invoice;
+	 *		}
+	 * https://github.com/magento/magento2/blob/2.0.0/app/code/Magento/Sales/Model/Order/Payment.php#L509-L526
+	 * https://github.com/magento/magento2/blob/2.2.1/app/code/Magento/Sales/Model/Order/Payment.php#L542-L560
+	 * 3) @used-by \Magento\Sales\Model\Order\Payment\Operations\AbstractOperation::invoice():
+	 *		protected function invoice(OrderPaymentInterface $payment) {
+	 *			$invoice = $payment->getOrder()->prepareInvoice();
+	 *			$invoice->register();
+	 *			if ($payment->getMethodInstance()->canCapture()) {
+	 *				$invoice->capture();
+	 *			}
+	 *			$payment->getOrder()->addRelatedObject($invoice);
+	 *			return $invoice;
+	 *		}
+	 * https://github.com/magento/magento2/blob/2.0.0/app/code/Magento/Sales/Model/Order/Payment/Operations/AbstractOperation.php#L56-L75
+	 * https://github.com/magento/magento2/blob/2.2.1/app/code/Magento/Sales/Model/Order/Payment/Operations/AbstractOperation.php#L59-L78
+	 * @return bool
+	 */
+    function canCapture() {return true;}
+
     public function setMethodCode($code) {
         $this->_code = $code;
     }
